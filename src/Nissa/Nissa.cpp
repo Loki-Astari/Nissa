@@ -3,7 +3,19 @@
 #include <ThorsSocket/SocketStream.h>
 #include <ThorsLogging/ThorsLogging.h>
 #include <charconv>
+#include <vector>
+#include <thread>
+#include <mutex>
+#include <condition_variable>
 #include <iostream>
+
+using Connections = std::queue<ThorsAnvil::ThorsSocket::SocketStream>;
+std::vector<std::thread>    workers;
+std::mutex                  connectionMutex;
+std::condition_variable     connectionCV;
+Connections                 connections;
+
+void connectionHandler();
 
 int main(int argc, char* argv[])
 {
@@ -44,10 +56,35 @@ int main(int argc, char* argv[])
     Server          server{ServerInfo{port}};
 #endif
 
+    workers.emplace_back(connectionHandler);
+
     while (true)
     {
         Socket          accept = server.accept(Blocking::No);
-        SocketStream    stream(std::move(accept));
+        std::unique_lock    lock(connectionMutex);
+        connections.emplace(std::move(accept));
+        connectionCV.notify_one();
+    }
+}
+
+ThorsAnvil::ThorsSocket::SocketStream getNextStream()
+{
+    using ThorsAnvil::ThorsSocket::SocketStream;
+
+    std::unique_lock    lock(connectionMutex);
+    connectionCV.wait(lock, [](){return !connections.empty();});
+    SocketStream socket = std::move(connections.front());
+    connections.pop();
+    return socket;
+}
+
+void connectionHandler()
+{
+    using ThorsAnvil::ThorsSocket::SocketStream;
+
+    while (true)
+    {
+        SocketStream stream = getNextStream();
 
         for (bool closeSocket = false; !closeSocket && stream.good();)
         {
