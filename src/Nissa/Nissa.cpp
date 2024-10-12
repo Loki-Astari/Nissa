@@ -19,8 +19,6 @@ int main(int argc, char* argv[])
     using ThorsAnvil::Nissa::Server;
     using ThorsAnvil::Nissa::PintHTTP;
 
-    PintHTTP    pintHTTP;
-
 #define EXAMPLE_CERTIFICATE_INFO    "/etc/letsencrypt/live/mydomain.com/"
 
 #ifdef CERTIFICATE_INFO
@@ -30,14 +28,16 @@ int main(int argc, char* argv[])
     CertificateInfo certificate{CERTIFICATE_INFO "fullchain.pem",
                                 CERTIFICATE_INFO "privkey.pem"
                                };
-    Server          server{certificate, port, pintHTTP};
+    Server          server{certificate, port};
 #else
     // Without a site certificate you should only use an HTTP port.
     // But most modern browsers are going to complain.
     // See: https://letsencrypt.org/getting-started/
     //      On how to get a free signed site certificate.
-    Server          server{port, pintHTTP};
+    Server          server{port};
 #endif
 
+    PintHTTP    pintHTTP;
+    server.listen(port, pintHTTP);
     server.run();
 }

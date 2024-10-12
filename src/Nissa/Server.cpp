@@ -1,60 +1,68 @@
 #include "Server.h"
 
-#include <ThorsSocket/Socket.h>
-#include <ThorsSocket/SocketStream.h>
-
 using namespace ThorsAnvil::Nissa;
 
-Server::Server(int port, Pint& pint, int workerCount)
+Server::Server(int workerCount)
     : ctx{ThorsAnvil::ThorsSocket::SSLMethodType::Server}
-    , listener{ThorsAnvil::ThorsSocket::ServerInfo{port}}
-    , pint{pint}
     , jobQueue{workerCount}
+    , eventHandler{jobQueue}
+    , secure{false}
 {}
 
-Server::Server(CertificateInfo& certificate, int port, Pint& pint, int workerCount)
+Server::Server(Certificate& certificate, int workerCount)
     : ctx{ThorsAnvil::ThorsSocket::SSLMethodType::Server, certificate}
-    , listener{ThorsAnvil::ThorsSocket::SServerInfo{port, ctx}}
-    , pint{pint}
     , jobQueue{workerCount}
+    , eventHandler{jobQueue}
+    , secure{true}
 {}
-
-template<typename T>
-struct CopyOnMove
-{
-    mutable T   value;
-    CopyOnMove(T&& init)
-        : value(std::move(init))
-    {}
-    CopyOnMove(CopyOnMove const& copy)
-        : value{std::move(copy.value)}
-    {}
-};
 
 void Server::run()
 {
-    using ThorsAnvil::ThorsSocket::Socket;
-    using ThorsAnvil::ThorsSocket::Blocking;
+    eventHandler.run();
+}
 
-    while (true)
-    {
-        Socket          accept = listener.accept(Blocking::No);
-        SocketStream    stream(std::move(accept));
-        jobQueue.addJob([&, StreamRef = CopyOnMove{std::move(stream)}]() mutable
-        {
-            SocketStream stream{std::move(StreamRef.value)};
-            connectionHandler(stream);
-        });
+Server::SocketServer Server::buildServer(int port)
+{
+    using ThorsAnvil::ThorsSocket::SServerInfo;
+    using ThorsAnvil::ThorsSocket::ServerInfo;
+
+    if (secure) {
+        return SocketServer{SServerInfo{port, ctx}};
+    }
+    else {
+        return SocketServer{ServerInfo{port}};
     }
 }
 
-void Server::connectionHandler(ThorsAnvil::ThorsSocket::SocketStream& stream)
+EventAction Server::createStreamJob(Pint& pint)
 {
-    for (bool closeSocket = false; !closeSocket && stream.good();)
+    return [&pint](ThorsAnvil::ThorsSocket::SocketStream& stream)
     {
-        closeSocket = true;
-        if (pint.handleRequest(stream) == PintResult::More) {
-            closeSocket = false;
+        PintResult result = pint.handleRequest(stream);
+        return result == PintResult::Done ? EventTask::Remove : EventTask::RestoreRead;
+    };
+}
+
+EventAction Server::createAcceptJob(int serverId)
+{
+    return [&, serverId](ThorsAnvil::ThorsSocket::SocketStream&)
+    {
+        using ThorsAnvil::ThorsSocket::Socket;
+        using ThorsAnvil::ThorsSocket::Blocking;
+
+        Socket          accept = listeners[serverId].server.accept(Blocking::No);
+        if (accept.isConnected())
+        {
+            int socketId = accept.socketId();
+            eventHandler.add(socketId, ThorsAnvil::ThorsSocket::SocketStream{std::move(accept)}, createStreamJob(listeners[serverId].pint));
         }
-    }
+        return EventTask::RestoreRead;
+    };
+}
+
+void Server::listen(int port, Pint& pint)
+{
+    listeners.emplace_back(buildServer(port), pint);
+
+    eventHandler.add(listeners.back().server.socketId(), ThorsAnvil::ThorsSocket::SocketStream{}, createAcceptJob(listeners.size() - 1));
 }
